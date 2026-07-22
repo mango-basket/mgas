@@ -1,7 +1,7 @@
 mod error;
 mod parser;
 
-use clap::{Parser, command};
+use clap::Parser;
 use computils::instr::Instr;
 use std::{collections::HashMap, fs, io};
 
