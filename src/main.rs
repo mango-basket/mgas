@@ -103,6 +103,10 @@ impl Object {
         }
         out.extend((reloctab_bytes.len() as u16).to_le_bytes());
 
+        // !TODO interface metadata
+        // set 0 for now
+        out.extend(0u16.to_le_bytes());
+
         // payload
         out.extend(instr_bytes);
         out.extend(data_bytes);
