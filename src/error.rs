@@ -21,3 +21,16 @@ impl Display for AssemblerError {
 
 impl Error for AssemblerError {}
 pub type AssemblerResult<T> = Result<T, AssemblerError>;
+
+impl AssemblerError {
+    pub fn new_with_line(msg: String, line: usize) -> Self {
+        Self {
+            msg,
+            line: Some(line),
+        }
+    }
+
+    pub fn new(msg: String) -> Self {
+        Self { msg, line: None }
+    }
+}

@@ -1,13 +1,15 @@
 mod error;
+mod mif;
 mod parser;
 
 use clap::Parser;
 use computils::instr::Instr;
+use mif::Metadata;
 use std::{collections::HashMap, fs, io};
 
 use crate::{
     error::{AssemblerError, AssemblerResult},
-    parser::{parse_assembly, Assembly},
+    parser::{Assembly, parse_assembly},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +42,7 @@ pub struct Object {
     pub data: Vec<(String, String)>,
     pub symbols: Symbols,
     pub relocs: Relocs, // assembler-time relocations with byte offsets
+    pub metadata: Option<Metadata>,
 }
 
 const OBJ_FILE_VERSION: u16 = 3;
@@ -55,6 +58,34 @@ impl Object {
     //
     // symtable: repeated (name bytes, 0u8, u16 addr)
     // reloctable: repeated (u16 offset, u16 sym_index, u8 kind)
+    //
+    // [mod_name_ofst u16][dependency_count u16]
+    // [export_count u16][param_count u16]
+    // [dependency_table][export_table]
+    // [param_table][string_pool]
+    //
+    // dependency_table:
+    //     repeated (name_ofst u16)
+    //
+    // export_table:
+    //     repeated (
+    //         name_ofst u16,
+    //         return_type_ofst u16,
+    //         first_param u16,
+    //         param_count u16
+    //     )
+    //
+    // param_table:
+    //     repeated (
+    //         name_ofst u16,
+    //         type_ofst u16
+    //     )
+    //
+    // string_pool:
+    //     repeated (
+    //         bytes,
+    //         0u8
+    //     )
 
     pub fn to_bin(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -103,15 +134,20 @@ impl Object {
         }
         out.extend((reloctab_bytes.len() as u16).to_le_bytes());
 
-        // !TODO interface metadata
-        // set 0 for now
-        out.extend(0u16.to_le_bytes());
+        // interface metadata
+        let metadata_bytes = self
+            .metadata
+            .as_ref()
+            .map(Metadata::to_bytes)
+            .unwrap_or_default();
+        out.extend((metadata_bytes.len() as u16).to_le_bytes());
 
         // payload
         out.extend(instr_bytes);
         out.extend(data_bytes);
         out.extend(symtab_bytes);
         out.extend(reloctab_bytes);
+        out.extend(metadata_bytes);
 
         out
     }
@@ -270,7 +306,10 @@ pub fn gen_bin(instrs: &Vec<Instr>) -> Vec<u8> {
     code
 }
 
-pub fn assemble_object(assembly: &Assembly) -> AssemblerResult<Vec<u8>> {
+pub fn assemble_object(
+    assembly: &Assembly,
+    metadata: Option<Metadata>,
+) -> AssemblerResult<Vec<u8>> {
     let mut out_instr = Vec::new();
     let mut byte_pos: u16 = 0;
     let mut symbols = HashMap::new();
@@ -374,6 +413,7 @@ pub fn assemble_object(assembly: &Assembly) -> AssemblerResult<Vec<u8>> {
             })
             .collect(),
         relocs,
+        metadata,
     }
     .to_bin())
 }
@@ -388,6 +428,10 @@ struct Cli {
     /// output object file
     #[arg(short, long)]
     output: Option<String>,
+
+    /// optional MIF interface file to embed
+    #[arg(long, value_name = "FILE")]
+    mif: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -402,7 +446,15 @@ fn main() -> io::Result<()> {
     });
 
     // assemble into object bytes
-    let object_bytes = assemble_object(&assembly).unwrap_or_else(|e| {
+    let metadata = cli
+        .mif
+        .map(Metadata::from_mif)
+        .transpose()
+        .unwrap_or_else(|e| {
+            eprintln!("MIF error: {:?}", e);
+            std::process::exit(1);
+        });
+    let object_bytes = assemble_object(&assembly, metadata).unwrap_or_else(|e| {
         eprintln!("Assembly error: {:?}", e);
         std::process::exit(1);
     });
