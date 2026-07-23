@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs};
+use std::{collections::HashMap, fmt, fs};
 
 use crate::error::{AssemblerError, AssemblerResult};
 
@@ -55,6 +55,38 @@ impl StringPool {
 
     pub fn is_empty(&self) -> bool {
         self.strings.is_empty()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Self {
+        let mut strings = Vec::new();
+        let mut offsets = HashMap::new();
+        let mut start = 0;
+
+        for (i, &b) in data.iter().enumerate() {
+            if b == 0 {
+                let s = String::from_utf8_lossy(&data[start..i]).into_owned();
+                offsets.insert(s.clone(), start as u16);
+                strings.push(s);
+                start = i + 1;
+            }
+        }
+
+        Self {
+            strings,
+            offsets,
+            next_offset: start as u16,
+        }
+    }
+
+    pub fn resolve(&self, offset: u16) -> &str {
+        for s in &self.strings {
+            if let Some(&off) = self.offsets.get(s)
+                && off == offset
+            {
+                return s;
+            }
+        }
+        ""
     }
 }
 
@@ -224,5 +256,93 @@ impl Metadata {
         out.extend(self.string_pool.serialize());
 
         out
+    }
+
+    pub fn from_bytes(data: &[u8]) -> AssemblerResult<Self> {
+        if data.len() < 8 {
+            return Err(AssemblerError::new("metadata section too small".into()));
+        }
+
+        let read_u16 = |data: &[u8], offset: usize| -> u16 {
+            u16::from_le_bytes([data[offset], data[offset + 1]])
+        };
+
+        let name_ofst = read_u16(data, 0);
+        let dependency_count = read_u16(data, 2);
+        let export_count = read_u16(data, 4);
+        let param_count = read_u16(data, 6);
+
+        let mut pos = 8;
+
+        let mut dependency_table = Vec::new();
+        for _ in 0..dependency_count {
+            dependency_table.push(read_u16(data, pos));
+            pos += 2;
+        }
+
+        let mut export_table = Vec::new();
+        for _ in 0..export_count {
+            let e = Export {
+                name_ofst: read_u16(data, pos),
+                ret_ofst: read_u16(data, pos + 2),
+                first_param_ofst: read_u16(data, pos + 4),
+                param_count: read_u16(data, pos + 6),
+            };
+            export_table.push(e);
+            pos += 8;
+        }
+
+        let mut param_table = Vec::new();
+        for _ in 0..param_count {
+            param_table.push(Param {
+                name_ofst: read_u16(data, pos),
+                type_ofst: read_u16(data, pos + 2),
+            });
+            pos += 4;
+        }
+
+        let string_pool = StringPool::from_bytes(&data[pos..]);
+
+        Ok(Self {
+            name_ofst,
+            dependency_count,
+            export_count,
+            dependency_table,
+            export_table,
+            param_table,
+            string_pool,
+        })
+    }
+}
+
+impl fmt::Display for Metadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "module {}", self.string_pool.resolve(self.name_ofst))?;
+
+        for &dep in &self.dependency_table {
+            writeln!(f, "depends {}", self.string_pool.resolve(dep))?;
+        }
+
+        for export in &self.export_table {
+            let name = self.string_pool.resolve(export.name_ofst);
+            let ret = self.string_pool.resolve(export.ret_ofst);
+
+            write!(f, "fn {}(", name)?;
+
+            for i in 0..export.param_count {
+                let idx = export.first_param_ofst as usize + i as usize;
+                let param = &self.param_table[idx];
+                let pname = self.string_pool.resolve(param.name_ofst);
+                let ptype = self.string_pool.resolve(param.type_ofst);
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}: {}", pname, ptype)?;
+            }
+
+            writeln!(f, ") -> {}", ret)?;
+        }
+
+        Ok(())
     }
 }

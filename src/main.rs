@@ -422,22 +422,105 @@ pub fn assemble_object(
 #[command(author, version, about)]
 struct Cli {
     /// input assembly file
-    #[arg(value_name = "FILE")]
-    input: String,
+    #[arg(value_name = "FILE", required_unless_present = "dump_meta")]
+    input: Option<String>,
 
     /// output object file
     #[arg(short, long)]
     output: Option<String>,
 
     /// optional MIF interface file to embed
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", group = "mode")]
     mif: Option<String>,
+
+    /// dump metadata from an mobj file
+    #[arg(long, value_name = "FILE", group = "mode")]
+    dump_meta: Option<String>,
+}
+
+fn dump_metadata(file: &str, output: &Option<String>) -> io::Result<()> {
+    let bytes = fs::read(file)?;
+
+    if bytes.len() < 6 {
+        eprintln!("error: file too small to be a valid mobj file");
+        std::process::exit(1);
+    }
+
+    if &bytes[0..4] != b"MOBJ" {
+        eprintln!("error: not a valid mobj file (bad magic)");
+        std::process::exit(1);
+    }
+
+    let read_u16 = |offset: usize| -> u16 {
+        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    };
+
+    let version = read_u16(4);
+
+    if version < OBJ_FILE_VERSION {
+        eprintln!(
+            "error: object file version {} does not contain metadata (requires version {})",
+            version, OBJ_FILE_VERSION
+        );
+        std::process::exit(1);
+    }
+
+    if bytes.len() < 16 {
+        eprintln!("error: file too small for a version {} header", version);
+        std::process::exit(1);
+    }
+
+    let instr_bytes_len = read_u16(6) as usize;
+    let data_bytes_len = read_u16(8) as usize;
+    let symtable_len = read_u16(10) as usize;
+    let reloctable_len = read_u16(12) as usize;
+    let meta_len = read_u16(14) as usize;
+
+    if meta_len == 0 {
+        eprintln!("file has no metadata section");
+        return Ok(());
+    }
+
+    let meta_start = 16 + instr_bytes_len + data_bytes_len + symtable_len + reloctable_len;
+    let meta_end = meta_start + meta_len;
+
+    if meta_end > bytes.len() {
+        eprintln!("error: metadata section extends beyond file");
+        std::process::exit(1);
+    }
+
+    let metadata = Metadata::from_bytes(&bytes[meta_start..meta_end]).unwrap_or_else(|e| {
+        eprintln!("error parsing metadata: {}", e);
+        std::process::exit(1);
+    });
+
+    match output {
+        Some(path) => {
+            fs::write(path, metadata.to_string())?;
+            println!("wrote metadata to {}", path);
+        }
+        None => {
+            print!("{}", metadata);
+        }
+    }
+
+    Ok(())
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let asm_code = fs::read_to_string(&cli.input)?;
+    if let Some(ref file) = cli.dump_meta {
+        dump_metadata(file, &cli.output)?;
+        return Ok(());
+    }
+
+    let input = cli.input.as_deref().unwrap_or_else(|| {
+        eprintln!("error: input file required for assembly mode");
+        std::process::exit(1);
+    });
+
+    let asm_code = fs::read_to_string(input)?;
 
     // parse assembly → instrs
     let assembly = parse_assembly(&asm_code).unwrap_or_else(|e| {
@@ -461,7 +544,7 @@ fn main() -> io::Result<()> {
 
     // decide output filename
     let output = cli.output.unwrap_or_else(|| {
-        let stem = std::path::Path::new(&cli.input)
+        let stem = std::path::Path::new(input)
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
