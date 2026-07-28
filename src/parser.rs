@@ -15,6 +15,7 @@ enum Section {
 pub struct Assembly {
     pub text: Vec<Instr>,
     pub data: Vec<(String, String)>,
+    pub global_labels: std::collections::HashSet<String>,
 }
 
 // extract constants from lines like: @define CONST = 42
@@ -183,6 +184,8 @@ pub fn parse_assembly(input: &str) -> AssemblerResult<Assembly> {
     let mut instrs = Vec::new();
     let mut cur_sec = Section::Text;
     let mut data = HashMap::new();
+    let mut global_labels = std::collections::HashSet::new();
+    let mut pending_global = false;
 
     for (lineno, line) in input.lines().enumerate() {
         let line = line.trim();
@@ -190,6 +193,12 @@ pub fn parse_assembly(input: &str) -> AssemblerResult<Assembly> {
 
         // skip blank lines and comments
         if line.is_empty() || line.starts_with(';') || line.starts_with("@define") {
+            continue;
+        }
+
+        // @global directive: marks the next label definition as global
+        if line == "@global" {
+            pending_global = true;
             continue;
         }
 
@@ -230,6 +239,12 @@ pub fn parse_assembly(input: &str) -> AssemblerResult<Assembly> {
                 let raw = &string[1..string.len() - 1];
                 let mut string = unescape_string(raw);
                 string.push('\0');
+
+                if pending_global {
+                    global_labels.insert(label.clone());
+                    pending_global = false;
+                }
+
                 data.insert(label, string);
                 continue;
             } else {
@@ -242,6 +257,10 @@ pub fn parse_assembly(input: &str) -> AssemblerResult<Assembly> {
 
         // label definition
         if let Some(label) = line.strip_suffix(':') {
+            if pending_global {
+                global_labels.insert(label.to_string());
+                pending_global = false;
+            }
             instrs.push(Instr::Lbl(label.to_string()));
             continue;
         }
@@ -410,5 +429,6 @@ pub fn parse_assembly(input: &str) -> AssemblerResult<Assembly> {
     Ok(Assembly {
         text: instrs,
         data: data.into_iter().collect(),
+        global_labels,
     })
 }

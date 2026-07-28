@@ -1,7 +1,7 @@
 pub mod error;
 pub mod mif;
 pub mod parser;
-const OBJ_FILE_VERSION: u16 = 3;
+const OBJ_FILE_VERSION: u16 = 4;
 #[derive(Debug, Clone)]
 pub struct Reloc {
     pub offset: u16,      // byte offset into emitted code where operand bytes start
@@ -20,6 +20,7 @@ pub enum RelocType {
 pub struct Symbol {
     pub name: String,
     pub val: u16,
+    pub global: bool,
 }
 type Symbols = Vec<Symbol>;
 type Relocs = Vec<Reloc>;
@@ -90,12 +91,13 @@ impl Object {
         }
         out.extend((data_bytes.len() as u16).to_le_bytes());
 
-        // symtable bytes (name\0 + u16 addr)
+        // symtable bytes (name\0 + u16 addr + u8 flags)
         let mut symtab_bytes = Vec::new();
-        for Symbol { name, val } in &self.symbols {
+        for Symbol { name, val, global } in &self.symbols {
             symtab_bytes.extend(name.bytes());
             symtab_bytes.push(0u8);
             symtab_bytes.extend(val.to_le_bytes());
+            symtab_bytes.push(if *global { 1 } else { 0 });
         }
         out.extend((symtab_bytes.len() as u16).to_le_bytes());
 
@@ -313,15 +315,15 @@ pub fn assemble_object(
             | Instr::JltLbl(name)
             | Instr::JgtLbl(name)
             | Instr::JeqLbl(name) => {
-                let target_addr = match symbols.get(name) {
-                    // Back reference
+                let target_addr = match symbols.get(name).filter(|a| **a != 0xFFFF) {
+                    // Back reference (resolved address)
                     Some(addr) => {
                         (*addr as isize - (byte_pos as isize + instr.clone().byte_len() as isize))
                             as i16
                     }
-                    // Forward reference
+                    // Forward reference (unresolved or first forward ref)
                     None => {
-                        symbols.insert(name.to_string(), 0xFFFF);
+                        symbols.entry(name.to_string()).or_insert(0xFFFF);
                         relocs.push(Reloc {
                             offset: byte_pos + 1,
                             sym_name: name.to_string(),
@@ -392,6 +394,7 @@ pub fn assemble_object(
             .map(|(name, val)| Symbol {
                 name: name.to_string(),
                 val: *val,
+                global: assembly.global_labels.contains(name),
             })
             .collect(),
         relocs,
@@ -467,9 +470,63 @@ pub fn dump_metadata(file: &str, output: &Option<String>) -> io::Result<()> {
 
     Ok(())
 }
+
+/// Read the module name and dependency list from a .mobj binary.
+/// Returns (module_name, dependency_names), or None if the object has no metadata.
+pub fn read_module_info(bytes: &[u8]) -> Option<(String, Vec<String>)> {
+    if bytes.len() < 16 || &bytes[0..4] != b"MOBJ" {
+        return None;
+    }
+
+    let read_u16 =
+        |offset: usize| -> u16 { u16::from_le_bytes([bytes[offset], bytes[offset + 1]]) };
+
+    let version = read_u16(4);
+    if version < OBJ_FILE_VERSION {
+        return None;
+    }
+
+    let instr_bytes_len = read_u16(6) as usize;
+    let data_bytes_len = read_u16(8) as usize;
+    let symtable_len = read_u16(10) as usize;
+    let reloctable_len = read_u16(12) as usize;
+    let meta_len = read_u16(14) as usize;
+
+    if meta_len == 0 {
+        return None;
+    }
+
+    let meta_start = 16 + instr_bytes_len + data_bytes_len + symtable_len + reloctable_len;
+    let meta_end = meta_start + meta_len;
+
+    if meta_end > bytes.len() {
+        return None;
+    }
+
+    let metadata = Metadata::from_bytes(&bytes[meta_start..meta_end]).ok()?;
+
+    let name = metadata.string_pool.resolve(metadata.name_ofst).to_string();
+    let deps = metadata
+        .dependency_table
+        .iter()
+        .map(|&ofst| metadata.string_pool.resolve(ofst).to_string())
+        .collect();
+
+    Some((name, deps))
+}
+
+pub fn assemble_source(asm: &str, metadata: Option<Metadata>) -> AssemblerResult<Vec<u8>> {
+    let assembly = parser::parse_assembly(asm)?;
+    assemble_object(&assembly, metadata)
+}
+
+pub fn assemble(assembly: &Assembly, metadata: Option<Metadata>) -> AssemblerResult<Vec<u8>> {
+    assemble_object(assembly, metadata)
+}
+
 use std::{collections::HashMap, fs, io};
 
 use computils::instr::Instr;
 pub use error::{AssemblerError, AssemblerResult};
 pub use mif::Metadata;
-pub use parser::{Assembly, parse_assembly};
+pub use parser::Assembly;

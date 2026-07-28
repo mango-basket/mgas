@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::{fs, io};
 
-use mgas::{Metadata, assemble_object, dump_metadata, parse_assembly};
+use mgas::{Metadata, dump_metadata};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -38,23 +38,17 @@ fn main() -> io::Result<()> {
 
     let asm_code = fs::read_to_string(input)?;
 
-    // parse assembly → instrs
-    let assembly = parse_assembly(&asm_code).unwrap_or_else(|e| {
-        eprintln!("Assembly parse error: {:?}", e);
-        std::process::exit(1);
-    });
-
-    // assemble into object bytes
     let metadata = cli
         .mif
         .map(Metadata::from_mif)
         .transpose()
         .unwrap_or_else(|e| {
-            eprintln!("MIF error: {:?}", e);
+            eprintln!("MIF error: {e}");
             std::process::exit(1);
         });
-    let object_bytes = assemble_object(&assembly, metadata).unwrap_or_else(|e| {
-        eprintln!("Assembly error: {:?}", e);
+
+    let object_bytes = mgas::assemble_source(&asm_code, metadata).unwrap_or_else(|e| {
+        eprintln!("Assembly error: {e}");
         std::process::exit(1);
     });
 

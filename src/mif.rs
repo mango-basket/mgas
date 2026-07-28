@@ -120,10 +120,14 @@ impl Metadata {
         let contents = fs::read_to_string(&filename)
             .map_err(|_| AssemblerError::new(format!("could not open {}", filename)))?;
 
+        Self::from_mif_str(&contents)
+    }
+
+    pub fn from_mif_str(contents: &str) -> AssemblerResult<Self> {
         let mut lines = contents.lines();
 
         let first = lines.next().ok_or_else(|| {
-            AssemblerError::new(format!("could not read module name in {}", filename))
+            AssemblerError::new("could not read module name".into())
         })?;
 
         let module_name = first
@@ -312,6 +316,10 @@ impl Metadata {
             param_table,
             string_pool,
         })
+    }
+
+    pub fn from_string(s: &str) -> AssemblerResult<Self> {
+        Self::from_bytes(s.as_bytes())
     }
 }
 
